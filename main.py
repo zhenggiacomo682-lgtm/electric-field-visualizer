@@ -1,7 +1,10 @@
 import numpy as np
 
 from src.grid import create_grid
-from src.field_solver import calculate_field_grid_vectorized
+from src.field_solver import (
+    calculate_field_grid_vectorized,
+    calculate_potential_grid
+)
 from src.visualization import plot_electric_field
 from src.input_handler import get_positive_integer, get_float
 
@@ -37,8 +40,15 @@ Ex, Ey = calculate_field_grid_vectorized(
     Y
 )
 
+V = calculate_potential_grid(
+    charges,
+    charge_positions,
+    X,
+    Y
+)
+
 plot_electric_field(
-    X, Y, Ex, Ey,
+    X, Y, Ex, Ey, V,
     charges,
     charge_positions
 )

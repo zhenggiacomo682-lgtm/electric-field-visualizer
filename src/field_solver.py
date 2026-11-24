@@ -47,3 +47,20 @@ def calculate_field_grid_vectorized(charges, charge_positions, X, Y):
         Ey += COULOMB_CONSTANT * q * dy / distance**3
 
     return Ex, Ey
+
+def calculate_potential_grid(charges, charge_positions, X, Y):
+
+    V = np.zeros_like(X, dtype=float)
+
+    for q, position in zip(charges, charge_positions):
+
+        dx = X - position[0]
+        dy = Y - position[1]
+
+        distance = np.sqrt(dx**2 + dy**2)
+
+        distance[distance == 0] = np.nan
+
+        V += COULOMB_CONSTANT * q / distance
+
+    return V
