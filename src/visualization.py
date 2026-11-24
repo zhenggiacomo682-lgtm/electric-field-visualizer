@@ -103,10 +103,18 @@ def plot_electric_field(X, Y, Ex, Ey, V, charges, charge_positions):
         )
 
     legend_elements = [
-        Line2D([0], [0], color="#38bdf8",
-               linewidth=2, label="Electric field lines"),
-        Line2D([0], [0], color="#d1d5db",
-               linestyle="--", label="Equipotential lines")
+        Line2D(
+            [0], [0],
+            color="#38bdf8",
+            linewidth=2,
+            label="Electric field lines"
+        ),
+        Line2D(
+            [0], [0],
+            color="#d1d5db",
+            linestyle="--",
+            label="Equipotential lines"
+        )
     ]
 
     ax.legend(
@@ -138,6 +146,95 @@ def plot_electric_field(X, Y, Ex, Ey, V, charges, charge_positions):
     )
 
     ax.grid(alpha=0.08)
+
+    fig.tight_layout()
+
+    plt.show()
+
+
+def plot_electric_potential(X, Y, V, charges, charge_positions):
+
+    plt.style.use("dark_background")
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    fig.patch.set_facecolor("#0d1117")
+    ax.set_facecolor("#0d1117")
+
+    finite_values = np.abs(V[np.isfinite(V)])
+
+    limit = np.percentile(finite_values, 95) if finite_values.size else 1.0
+
+    limit = max(limit, 1e-12)
+
+    levels = np.linspace(-limit, limit, 101)
+
+    heatmap = ax.contourf(
+        X, Y, V,
+        levels=levels,
+        cmap="RdBu_r",
+        extend="both"
+    )
+
+    if finite_values.size and np.max(finite_values) > 0:
+
+        contours = ax.contour(
+            X, Y, V,
+            levels=np.linspace(-limit, limit, 11),
+            colors="black",
+            linewidths=0.6,
+            alpha=0.5
+        )
+
+        ax.clabel(
+            contours,
+            fontsize=8,
+            fmt="%.1f V"
+        )
+
+    for q, position in zip(charges, charge_positions):
+
+        color = "#ff4757" if q > 0 else "#38bdf8" if q < 0 else "gray"
+
+        ax.scatter(
+            position[0],
+            position[1],
+            color=color,
+            s=100,
+            edgecolors="white",
+            zorder=5
+        )
+
+        ax.annotate(
+            f"{q * 1e9:+.2g} nC",
+            position,
+            xytext=(0, 13),
+            textcoords="offset points",
+            ha="center",
+            color="black",
+            fontsize=10,
+            fontweight="bold",
+            bbox=dict(
+                facecolor="white",
+                alpha=0.8,
+                edgecolor="none"
+            )
+        )
+
+    cbar = fig.colorbar(heatmap, ax=ax)
+
+    cbar.set_label("Electric potential (V)")
+
+    ax.set_aspect("equal")
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+
+    ax.set_title(
+        "Electric Potential Heatmap",
+        fontsize=17,
+        fontweight="bold",
+        pad=18
+    )
 
     fig.tight_layout()
 

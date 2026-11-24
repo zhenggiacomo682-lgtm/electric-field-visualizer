@@ -5,7 +5,10 @@ from src.field_solver import (
     calculate_field_grid_vectorized,
     calculate_potential_grid
 )
-from src.visualization import plot_electric_field
+from src.visualization import (
+    plot_electric_field,
+    plot_electric_potential
+)
 from src.input_handler import get_positive_integer, get_float
 
 print("=== ELECTRIC FIELD SIMULATOR ===")
@@ -49,6 +52,12 @@ V = calculate_potential_grid(
 
 plot_electric_field(
     X, Y, Ex, Ey, V,
+    charges,
+    charge_positions
+)
+
+plot_electric_potential(
+    X, Y, V,
     charges,
     charge_positions
 )
