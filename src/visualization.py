@@ -237,3 +237,73 @@ def plot_electric_potential(X, Y, V, charges, charge_positions):
     )
 
     fig.tight_layout()
+    
+    
+def plot_potential_3d(X, Y, V, charges, charge_positions):
+
+    plt.style.use("dark_background")
+
+    fig = plt.figure(figsize=(11, 8))
+
+    fig.patch.set_facecolor("#0d1117")
+
+    ax = fig.add_subplot(111, projection="3d")
+
+    ax.set_facecolor("#0d1117")
+
+    finite_values = np.abs(V[np.isfinite(V)])
+
+    limit = np.percentile(finite_values, 98) if finite_values.size else 1.0
+
+    limit = max(limit, 1e-12)
+
+    V_display = np.clip(V, -limit, limit)
+
+    norm = Normalize(vmin=-limit, vmax=limit)
+
+    surface = ax.plot_surface(
+        X, Y, V_display,
+        cmap="RdBu_r",
+        norm=norm,
+        rcount=200,
+        ccount=200,
+        linewidth=0,
+        antialiased=True,
+        alpha=0.95
+    )
+
+    for q, position in zip(charges, charge_positions):
+
+        color = "#ff4757" if q > 0 else "#38bdf8" if q < 0 else "gray"
+
+        ax.scatter(
+            position[0],
+            position[1],
+            0,
+            color=color,
+            s=80
+        )
+
+    cbar = fig.colorbar(
+        surface,
+        ax=ax,
+        shrink=0.65,
+        pad=0.1
+    )
+
+    cbar.set_label("Electric potential (V)")
+
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    ax.set_zlabel("Potential (V)")
+
+    ax.set_title(
+        "3D Electric Potential Surface",
+        fontsize=17,
+        fontweight="bold",
+        pad=20
+    )
+
+    ax.view_init(elev=30, azim=-60)
+
+    fig.tight_layout()

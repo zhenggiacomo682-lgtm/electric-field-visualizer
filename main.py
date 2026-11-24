@@ -8,7 +8,8 @@ from src.field_solver import (
 )
 from src.visualization import (
     plot_electric_field,
-    plot_electric_potential
+    plot_electric_potential,
+    plot_potential_3d
 )
 from src.input_handler import get_positive_integer, get_float
 
@@ -58,6 +59,12 @@ plot_electric_field(
 )
 
 plot_electric_potential(
+    X, Y, V,
+    charges,
+    charge_positions
+)
+
+plot_potential_3d(
     X, Y, V,
     charges,
     charge_positions
