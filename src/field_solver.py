@@ -1,5 +1,5 @@
 import numpy as np
-from src.electrostatics import total_electric_field
+from src.electrostatics import total_electric_field, COULOMB_CONSTANT
 
 
 def calculate_field_grid(charges, charge_positions, X, Y):
@@ -25,5 +25,25 @@ def calculate_field_grid(charges, charge_positions, X, Y):
             except ValueError:
                 Ex[i, j] = np.nan
                 Ey[i, j] = np.nan
+
+    return Ex, Ey
+
+
+def calculate_field_grid_vectorized(charges, charge_positions, X, Y):
+
+    Ex = np.zeros_like(X, dtype=float)
+    Ey = np.zeros_like(Y, dtype=float)
+
+    for q, position in zip(charges, charge_positions):
+
+        dx = X - position[0]
+        dy = Y - position[1]
+
+        distance = np.sqrt(dx**2 + dy**2)
+
+        distance[distance == 0] = np.nan
+
+        Ex += COULOMB_CONSTANT * q * dx / distance**3
+        Ey += COULOMB_CONSTANT * q * dy / distance**3
 
     return Ex, Ey
