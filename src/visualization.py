@@ -149,7 +149,7 @@ def plot_electric_field(X, Y, Ex, Ey, V, charges, charge_positions):
 
     fig.tight_layout()
 
-    plt.show()
+  
 
 
 def plot_electric_potential(X, Y, V, charges, charge_positions):
@@ -237,5 +237,3 @@ def plot_electric_potential(X, Y, V, charges, charge_positions):
     )
 
     fig.tight_layout()
-
-    plt.show()

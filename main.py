@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 from src.grid import create_grid
 from src.field_solver import (
@@ -61,3 +62,5 @@ plot_electric_potential(
     charges,
     charge_positions
 )
+
+plt.show()
