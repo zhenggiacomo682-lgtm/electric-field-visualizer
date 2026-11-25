@@ -1,11 +1,14 @@
-
 import time
 import numpy as np
 import matplotlib.pyplot as plt
 
 from matplotlib.widgets import Slider, Button
+from matplotlib.colors import Normalize
 from src.grid import create_grid
-from src.field_solver import calculate_field_grid_vectorized
+from src.field_solver import (
+    calculate_field_grid_vectorized,
+    calculate_potential_grid
+)
 
 
 def run_interactive_simulator():
@@ -26,6 +29,14 @@ def run_interactive_simulator():
     dragging = False
     slider_changing = False
 
+    view_modes = [
+        "Electric Field",
+        "Equipotential",
+        "Combined"
+    ]
+
+    view_index = 0
+
     last_update = 0.0
     update_interval = 1 / 15
 
@@ -35,7 +46,7 @@ def run_interactive_simulator():
     fig, ax = plt.subplots(figsize=(11, 9))
 
     fig.patch.set_facecolor("#0d1117")
-    fig.subplots_adjust(bottom=0.22)
+    fig.subplots_adjust(bottom=0.27)
 
     def update_field(fast=False):
 
@@ -53,34 +64,108 @@ def run_interactive_simulator():
             X, Y = X_fast, Y_fast
             density = 0.8
             linewidth = 0.8
+            number_of_levels = 7
 
         else:
 
             X, Y = X_full, Y_full
             density = 1.5
             linewidth = 1.0
+            number_of_levels = 13
 
         ax.clear()
         ax.set_facecolor("#0d1117")
 
-        Ex, Ey = calculate_field_grid_vectorized(
-            charges,
-            charge_positions,
-            X,
-            Y
-        )
+        current_view = view_modes[view_index]
 
-        magnitude = np.hypot(Ex, Ey)
+        if current_view in ["Electric Field", "Combined"]:
 
-        if np.any(np.isfinite(magnitude) & (magnitude > 0)):
-
-            ax.streamplot(
-                X, Y, Ex, Ey,
-                color=np.log1p(magnitude),
-                cmap="turbo",
-                density=density,
-                linewidth=linewidth
+            Ex, Ey = calculate_field_grid_vectorized(
+                charges,
+                charge_positions,
+                X,
+                Y
             )
+
+            magnitude = np.hypot(Ex, Ey)
+
+            log_magnitude = np.log1p(magnitude)
+
+            finite_values = log_magnitude[
+                np.isfinite(log_magnitude)
+            ]
+
+            if finite_values.size and np.max(finite_values) > 0:
+
+                upper_limit = np.percentile(
+                    finite_values,
+                    95
+                )
+
+                norm = Normalize(
+                    vmin=0,
+                    vmax=max(upper_limit, 1e-12),
+                    clip=True
+                )
+
+                ax.streamplot(
+                    X, Y, Ex, Ey,
+                    color=log_magnitude,
+                    cmap="turbo",
+                    norm=norm,
+                    density=density,
+                    linewidth=linewidth
+                )
+
+        if current_view in ["Equipotential", "Combined"]:
+
+            V = calculate_potential_grid(
+                charges,
+                charge_positions,
+                X,
+                Y
+            )
+
+            finite_values = V[np.isfinite(V)]
+
+            if finite_values.size:
+
+                limit = np.percentile(
+                    np.abs(finite_values),
+                    95
+                )
+
+                if limit > 0:
+
+                    levels = np.linspace(
+                        -limit,
+                        limit,
+                        number_of_levels
+                    )
+
+                    levels = levels[
+                        (levels > np.min(finite_values)) &
+                        (levels < np.max(finite_values))
+                    ]
+
+                    if levels.size:
+
+                        contours = ax.contour(
+                            X, Y, V,
+                            levels=levels,
+                            colors="#d1d5db",
+                            linewidths=0.9,
+                            linestyles="dashed",
+                            alpha=0.8
+                        )
+
+                        if not fast:
+
+                            ax.clabel(
+                                contours,
+                                fontsize=8,
+                                fmt="%.1f V"
+                            )
 
         for i, (q, position) in enumerate(
             zip(charges, charge_positions)
@@ -130,7 +215,7 @@ def run_interactive_simulator():
         ax.set_ylabel("y (m)")
 
         ax.set_title(
-            f"Interactive Electric Field Simulator | {len(charges)} charges",
+            f"{current_view} | {len(charges)} charges",
             fontsize=14,
             fontweight="bold"
         )
@@ -139,7 +224,9 @@ def run_interactive_simulator():
 
         fig.canvas.draw_idle()
 
-    slider_ax = fig.add_axes([0.25, 0.13, 0.55, 0.03])
+    slider_ax = fig.add_axes(
+        [0.25, 0.19, 0.55, 0.03]
+    )
 
     charge_slider = Slider(
         slider_ax,
@@ -263,7 +350,9 @@ def run_interactive_simulator():
             if np.all(distances > 0.4):
                 break
 
-            position = np.random.uniform(-3, 3, size=2)
+            position = np.random.uniform(
+                -3, 3, size=2
+            )
 
         charges = np.append(charges, value)
 
@@ -313,26 +402,57 @@ def run_interactive_simulator():
         sync_slider()
         update_field()
 
+    def change_view(event):
+
+        nonlocal view_index
+
+        view_index = (
+            view_index + 1
+        ) % len(view_modes)
+
+        view_button.label.set_text(
+            f"View: {view_modes[view_index]}"
+        )
+
+        update_field()
+
     def reset(event):
 
         nonlocal charges
         nonlocal charge_positions
         nonlocal selected_charge
         nonlocal dragging
+        nonlocal slider_changing
 
         charges = initial_charges.copy()
         charge_positions = initial_positions.copy()
 
         selected_charge = 0
         dragging = False
+        slider_changing = False
 
         sync_slider()
         update_field()
 
-    positive_ax = fig.add_axes([0.10, 0.045, 0.19, 0.045])
-    negative_ax = fig.add_axes([0.30, 0.045, 0.19, 0.045])
-    remove_ax = fig.add_axes([0.50, 0.045, 0.19, 0.045])
-    reset_ax = fig.add_axes([0.70, 0.045, 0.19, 0.045])
+    positive_ax = fig.add_axes(
+        [0.10, 0.105, 0.19, 0.045]
+    )
+
+    negative_ax = fig.add_axes(
+        [0.30, 0.105, 0.19, 0.045]
+    )
+
+    remove_ax = fig.add_axes(
+        [0.50, 0.105, 0.19, 0.045]
+    )
+
+    reset_ax = fig.add_axes(
+        [0.70, 0.105, 0.19, 0.045]
+    )
+
+    view_ax = fig.add_axes(
+        [0.30, 0.035, 0.39, 0.045]
+    )
 
     positive_button = Button(
         positive_ax,
@@ -362,10 +482,18 @@ def run_interactive_simulator():
         hovercolor="#555555"
     )
 
+    view_button = Button(
+        view_ax,
+        "View: Electric Field",
+        color="#34305c",
+        hovercolor="#51498a"
+    )
+
     positive_button.on_clicked(add_positive)
     negative_button.on_clicked(add_negative)
     remove_button.on_clicked(remove_charge)
     reset_button.on_clicked(reset)
+    view_button.on_clicked(change_view)
 
     fig.canvas.mpl_connect(
         "button_press_event",
