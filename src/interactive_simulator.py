@@ -1,3 +1,5 @@
+
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -22,16 +24,41 @@ def run_interactive_simulator():
 
     selected_charge = 0
     dragging = False
+    slider_changing = False
 
-    X, Y = create_grid(-5, 5, -5, 5, 100)
+    last_update = 0.0
+    update_interval = 1 / 15
+
+    X_fast, Y_fast = create_grid(-5, 5, -5, 5, 60)
+    X_full, Y_full = create_grid(-5, 5, -5, 5, 200)
 
     fig, ax = plt.subplots(figsize=(11, 9))
 
     fig.patch.set_facecolor("#0d1117")
-
     fig.subplots_adjust(bottom=0.22)
 
-    def update_field():
+    def update_field(fast=False):
+
+        nonlocal last_update
+
+        current_time = time.perf_counter()
+
+        if fast and current_time - last_update < update_interval:
+            return
+
+        last_update = current_time
+
+        if fast:
+
+            X, Y = X_fast, Y_fast
+            density = 0.8
+            linewidth = 0.8
+
+        else:
+
+            X, Y = X_full, Y_full
+            density = 1.5
+            linewidth = 1.0
 
         ax.clear()
         ax.set_facecolor("#0d1117")
@@ -51,8 +78,8 @@ def run_interactive_simulator():
                 X, Y, Ex, Ey,
                 color=np.log1p(magnitude),
                 cmap="turbo",
-                density=1.5,
-                linewidth=1.0
+                density=density,
+                linewidth=linewidth
             )
 
         for i, (q, position) in enumerate(
@@ -135,6 +162,7 @@ def run_interactive_simulator():
         else:
 
             charge_slider.set_active(True)
+
             charge_slider.set_val(
                 charges[selected_charge] * 1e9
             )
@@ -143,12 +171,16 @@ def run_interactive_simulator():
 
     def update_charge(value):
 
+        nonlocal slider_changing
+
         if selected_charge is None:
             return
 
         charges[selected_charge] = value * 1e-9
 
-        update_field()
+        slider_changing = True
+
+        update_field(fast=True)
 
     charge_slider.on_changed(update_charge)
 
@@ -180,7 +212,7 @@ def run_interactive_simulator():
             dragging = True
 
             sync_slider()
-            update_field()
+            update_field(fast=True)
 
     def on_motion(event):
 
@@ -195,13 +227,19 @@ def run_interactive_simulator():
             event.ydata
         ]
 
-        update_field()
+        update_field(fast=True)
 
     def on_release(event):
 
         nonlocal dragging
+        nonlocal slider_changing
 
-        dragging = False
+        if dragging or slider_changing:
+
+            dragging = False
+            slider_changing = False
+
+            update_field()
 
     def add_charge(value):
 
