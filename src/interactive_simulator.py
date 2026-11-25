@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from matplotlib.colors import Normalize
 from src.grid import create_grid
+from src.field_probe import calculate_probe_values
 from src.field_solver import (
     calculate_field_grid_vectorized,
     calculate_potential_grid
@@ -28,6 +29,7 @@ def run_interactive_simulator():
     selected_charge = 0
     dragging = False
     slider_changing = False
+    probe_point = None
 
     view_modes = [
         "Electric Field",
@@ -46,7 +48,89 @@ def run_interactive_simulator():
     fig, ax = plt.subplots(figsize=(11, 9))
 
     fig.patch.set_facecolor("#0d1117")
-    fig.subplots_adjust(bottom=0.27)
+    fig.subplots_adjust(bottom=0.27, right=0.72)
+
+    probe_text = fig.text(
+        0.74, 0.75,
+        "Right-click to place probe",
+        color="white",
+        fontsize=10,
+        va="top",
+        linespacing=1.7
+    )
+
+    def draw_probe():
+
+        if probe_point is None:
+
+            probe_text.set_text(
+                "Right-click to place probe"
+            )
+
+            return
+
+        x, y = probe_point
+
+        ax.scatter(
+            x, y,
+            marker="x",
+            color="yellow",
+            s=70,
+            zorder=8
+        )
+
+        try:
+
+            field, magnitude, potential = calculate_probe_values(
+                charges,
+                charge_positions,
+                probe_point
+            )
+
+        except ValueError:
+
+            probe_text.set_text(
+                f"FIELD PROBE\n\n"
+                f"x = {x:.3f} m\n"
+                f"y = {y:.3f} m\n\n"
+                "Undefined at point charge"
+            )
+
+            return
+
+        probe_text.set_text(
+            f"FIELD PROBE\n\n"
+            f"x = {x:.3f} m\n"
+            f"y = {y:.3f} m\n\n"
+            f"Ex = {field[0]:.4g} N/C\n"
+            f"Ey = {field[1]:.4g} N/C\n"
+            f"|E| = {magnitude:.4g} N/C\n"
+            f"V = {potential:.4g} V"
+        )
+
+        if np.isfinite(magnitude) and magnitude > 0:
+
+            direction = 0.65 * field / magnitude
+
+            ax.annotate(
+                "",
+                xy=probe_point + direction,
+                xytext=probe_point,
+                arrowprops=dict(
+                    arrowstyle="->",
+                    color="yellow",
+                    lw=2
+                ),
+                zorder=9
+            )
+
+    def clear_probe(event):
+
+        nonlocal probe_point
+
+        probe_point = None
+
+        update_field()
 
     def update_field(fast=False):
 
@@ -222,6 +306,8 @@ def run_interactive_simulator():
 
         ax.grid(alpha=0.08)
 
+        draw_probe()
+
         fig.canvas.draw_idle()
 
     slider_ax = fig.add_axes(
@@ -273,9 +359,28 @@ def run_interactive_simulator():
 
     def on_press(event):
 
-        nonlocal selected_charge, dragging
+        nonlocal selected_charge
+        nonlocal dragging
+        nonlocal probe_point
 
-        if event.inaxes != ax or event.button != 1:
+        if event.inaxes != ax:
+            return
+
+        if event.xdata is None or event.ydata is None:
+            return
+
+        if event.button == 3:
+
+            probe_point = np.array([
+                event.xdata,
+                event.ydata
+            ])
+
+            update_field()
+
+            return
+
+        if event.button != 1:
             return
 
         if len(charges) == 0:
@@ -423,6 +528,9 @@ def run_interactive_simulator():
         nonlocal selected_charge
         nonlocal dragging
         nonlocal slider_changing
+        nonlocal probe_point
+
+        probe_point = None
 
         charges = initial_charges.copy()
         charge_positions = initial_positions.copy()
@@ -451,7 +559,11 @@ def run_interactive_simulator():
     )
 
     view_ax = fig.add_axes(
-        [0.30, 0.035, 0.39, 0.045]
+        [0.20, 0.035, 0.39, 0.045]
+    )
+
+    clear_probe_ax = fig.add_axes(
+        [0.62, 0.035, 0.19, 0.045]
     )
 
     positive_button = Button(
@@ -489,11 +601,19 @@ def run_interactive_simulator():
         hovercolor="#51498a"
     )
 
+    clear_probe_button = Button(
+        clear_probe_ax,
+        "Clear Probe",
+        color="#30363d",
+        hovercolor="#555555"
+    )
+
     positive_button.on_clicked(add_positive)
     negative_button.on_clicked(add_negative)
     remove_button.on_clicked(remove_charge)
     reset_button.on_clicked(reset)
     view_button.on_clicked(change_view)
+    clear_probe_button.on_clicked(clear_probe)
 
     fig.canvas.mpl_connect(
         "button_press_event",
