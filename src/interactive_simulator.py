@@ -17,6 +17,10 @@ def run_interactive_simulator():
         [2.0, 0.0]
     ])
 
+    initial_positions = charge_positions.copy()
+
+    selected_charge = None
+
     X, Y = create_grid(-5, 5, -5, 5, 100)
 
     fig, ax = plt.subplots(figsize=(11, 9))
@@ -54,6 +58,15 @@ def run_interactive_simulator():
                 color=color,
                 s=100,
                 zorder=5
+            )
+
+            ax.annotate(
+                f"{q * 1e9:+.2f} nC",
+                position,
+                xytext=(0, 12),
+                textcoords="offset points",
+                ha="center",
+                color=color
             )
 
         ax.set_xlim(-5, 5)
@@ -94,14 +107,81 @@ def run_interactive_simulator():
     slider_q1.on_changed(update_charges)
     slider_q2.on_changed(update_charges)
 
+    def on_press(event):
+
+        nonlocal selected_charge
+
+        if event.inaxes != ax or event.button != 1:
+            return
+
+        mouse_position = np.array([
+            event.xdata,
+            event.ydata
+        ])
+
+        distances = np.linalg.norm(
+            charge_positions - mouse_position,
+            axis=1
+        )
+
+        nearest_charge = np.argmin(distances)
+
+        if distances[nearest_charge] < 0.3:
+
+            selected_charge = nearest_charge
+
+    def on_motion(event):
+
+        if selected_charge is None:
+            return
+
+        if event.inaxes != ax:
+            return
+
+        charge_positions[selected_charge] = [
+            event.xdata,
+            event.ydata
+        ]
+
+        update_field()
+
+    def on_release(event):
+
+        nonlocal selected_charge
+
+        selected_charge = None
+
+    fig.canvas.mpl_connect(
+        "button_press_event",
+        on_press
+    )
+
+    fig.canvas.mpl_connect(
+        "motion_notify_event",
+        on_motion
+    )
+
+    fig.canvas.mpl_connect(
+        "button_release_event",
+        on_release
+    )
+
     reset_ax = fig.add_axes([0.42, 0.025, 0.16, 0.04])
 
     reset_button = Button(reset_ax, "Reset")
 
     def reset(event):
 
+        nonlocal selected_charge
+
+        selected_charge = None
+
+        charge_positions[:] = initial_positions
+
         slider_q1.reset()
         slider_q2.reset()
+
+        update_field()
 
     reset_button.on_clicked(reset)
 
