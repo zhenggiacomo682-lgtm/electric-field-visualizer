@@ -2,16 +2,14 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-from matplotlib.widgets import Slider, Button
-from matplotlib.colors import Normalize
+from matplotlib.widgets import Slider, Button, TextBox
 
-from src.grid import create_grid
+from src.domain_manager import DomainManager
+from src.field_renderer import FieldRenderer
+from src.dynamic_renderer import DynamicRenderer
+from src.animation import AnimationEngine
 from src.field_probe import calculate_probe_values
 from src.particle_simulator import ParticleSimulator
-from src.field_solver import (
-    calculate_field_grid_vectorized,
-    calculate_potential_grid
-)
 
 
 def run_interactive_simulator():
@@ -20,23 +18,26 @@ def run_interactive_simulator():
 
     charges = np.array([5e-9, -5e-9])
 
-    charge_positions = np.array([
+    positions = np.array([
         [-2.0, 0.0],
         [2.0, 0.0]
     ])
 
-    initial_charges = charges.copy()
-    initial_positions = charge_positions.copy()
-
     selected_charge = 0
-    dragging = False
-    slider_changing = False
-    probe_point = None
 
     particle = None
-    placing_particle = False
     particle_marker = None
     trajectory_line = None
+
+    probe_point = None
+
+    dragging = False
+    slider_changing = False
+    preview_active = False
+    preview_dirty = False
+    field_dirty = False
+    placing_particle = False
+    syncing_slider = False
 
     particle_status = "Place a particle to begin"
 
@@ -55,59 +56,194 @@ def run_interactive_simulator():
     view_index = 0
     method_index = 1
 
-    last_update = 0.0
-    update_interval = 1 / 15
+    last_preview_update = 0.0
+    preview_interval = 1 / 25
 
-    X_fast, Y_fast = create_grid(-5, 5, -5, 5, 60)
-    X_full, Y_full = create_grid(-5, 5, -5, 5, 200)
+    integration_time = 0.0
 
-    fig, ax = plt.subplots(figsize=(13, 9))
+    domain = DomainManager()
+
+    fig, ax = plt.subplots(
+        figsize=(15, 10)
+    )
 
     fig.patch.set_facecolor("#0d1117")
 
     fig.subplots_adjust(
-        left=0.08,
-        right=0.70,
-        bottom=0.34,
+        left=0.07,
+        right=0.65,
+        bottom=0.39,
         top=0.94
     )
 
+    renderer = FieldRenderer(
+        ax,
+        domain
+    )
+
+    dynamic_renderer = DynamicRenderer(
+        ax,
+        domain
+    )
+
+    animation = AnimationEngine(
+        fig,
+        target_fps=60,
+        text_fps=10
+    )
+
     probe_text = fig.text(
-        0.74,
-        0.88,
+        0.70,
+        0.92,
         "Right-click to place probe",
-        color="white",
         fontsize=10,
         va="top",
-        linespacing=1.5
+        linespacing=1.4
     )
 
     particle_text = fig.text(
-        0.74,
-        0.59,
+        0.73,
+        0.65,
         particle_status,
-        color="white",
         fontsize=9,
         va="top",
-        linespacing=1.2
+        linespacing=1.1
     )
 
-    def refresh_particle():
+    def create_textbox(
+        bounds,
+        label,
+        initial
+    ):
 
-        if particle_marker is None or trajectory_line is None:
-            return
+        textbox_ax = fig.add_axes(
+            bounds
+        )
+
+        textbox = TextBox(
+            textbox_ax,
+            label,
+            initial=initial,
+            color="#21262d",
+            hovercolor="#30363d"
+        )
+
+        textbox.label.set_color("white")
+        textbox.text_disp.set_color("white")
+
+        return textbox
+
+    fig.text(
+        0.70,
+        0.30,
+        "INITIAL CONDITIONS",
+        fontsize=10,
+        fontweight="bold"
+    )
+
+    x_input = create_textbox(
+        [0.73, 0.25, 0.09, 0.032],
+        "x (m) ",
+        "0"
+    )
+
+    y_input = create_textbox(
+        [0.88, 0.25, 0.09, 0.032],
+        "y (m) ",
+        "2"
+    )
+
+    vx_input = create_textbox(
+        [0.73, 0.20, 0.09, 0.032],
+        "vx ",
+        "0"
+    )
+
+    vy_input = create_textbox(
+        [0.88, 0.20, 0.09, 0.032],
+        "vy ",
+        "1"
+    )
+
+    q_input = create_textbox(
+        [0.73, 0.15, 0.09, 0.032],
+        "q (nC) ",
+        "1"
+    )
+
+    mass_input = create_textbox(
+        [0.88, 0.15, 0.09, 0.032],
+        "m (ug) ",
+        "1"
+    )
+
+    def read_particle_parameters():
+
+        values = np.array([
+            float(x_input.text),
+            float(y_input.text),
+            float(vx_input.text),
+            float(vy_input.text),
+            float(q_input.text),
+            float(mass_input.text)
+        ])
+
+        if not np.all(np.isfinite(values)):
+
+            raise ValueError(
+                "All parameters must be finite"
+            )
+
+        if values[5] <= 0:
+
+            raise ValueError(
+                "Mass must be positive"
+            )
+
+        return (
+            values[:2],
+            values[2:4],
+            values[4] * 1e-9,
+            values[5] * 1e-9
+        )
+
+    def refresh_particle(force=False):
+
+        if particle_marker is None:
+
+            return False
 
         if particle is None:
 
             particle_marker.set_data([], [])
             trajectory_line.set_data([], [])
-            particle_text.set_text(particle_status)
 
-            return
+            particle_text.set_text(
+                particle_status
+            )
+
+            return True
 
         position = particle.get_position()
         velocity = particle.get_velocity()
-        trajectory = particle.get_trajectory()
+
+        history = particle.trajectory
+
+        stride = max(
+            1,
+            (len(history) + 3999) // 4000
+        )
+
+        trajectory = np.asarray(
+            history[::stride]
+        )
+
+        if (len(history) - 1) % stride != 0:
+
+            trajectory = np.vstack([
+                trajectory,
+                position
+            ])
 
         particle_marker.set_data(
             [position[0]],
@@ -119,11 +255,17 @@ def run_interactive_simulator():
             trajectory[:, 1]
         )
 
+        if not animation.should_update_text(force):
+
+            return False
+
         try:
 
-            kinetic, potential, total = particle.get_energy(
-                charges,
-                charge_positions
+            kinetic, potential, total = (
+                particle.get_energy(
+                    charges,
+                    positions
+                )
             )
 
             energy_text = (
@@ -144,29 +286,333 @@ def run_interactive_simulator():
             f"vx = {velocity[0]:.3f} m/s\n"
             f"vy = {velocity[1]:.3f} m/s\n\n"
             f"{energy_text}\n\n"
+            f"FPS = {animation.get_fps():.1f}\n"
+            f"Render = {animation.get_render_time():.2f} ms\n"
+            f"Physics = {integration_time:.2f} ms\n"
             f"{particle_status}"
         )
+
+        return True
+
+    def draw_probe():
+
+        if probe_point is None:
+
+            probe_text.set_text(
+                "Right-click to place probe"
+            )
+
+            return
+
+        ax.scatter(
+            probe_point[0],
+            probe_point[1],
+            marker="x",
+            color="yellow",
+            s=80,
+            zorder=12
+        )
+
+        try:
+
+            field, magnitude, potential = (
+                calculate_probe_values(
+                    charges,
+                    positions,
+                    probe_point
+                )
+            )
+
+            probe_text.set_text(
+                "FIELD PROBE\n\n"
+                f"x = {probe_point[0]:.3f} m\n"
+                f"y = {probe_point[1]:.3f} m\n\n"
+                f"Ex = {field[0]:.4g} N/C\n"
+                f"Ey = {field[1]:.4g} N/C\n"
+                f"|E| = {magnitude:.4g} N/C\n"
+                f"V = {potential:.4g} V"
+            )
+
+            if magnitude > 0 and np.isfinite(magnitude):
+
+                direction = field / magnitude
+
+                length = domain.limit * 0.13
+
+                ax.arrow(
+                    probe_point[0],
+                    probe_point[1],
+                    direction[0] * length,
+                    direction[1] * length,
+                    color="yellow",
+                    width=domain.limit * 0.004,
+                    head_width=domain.limit * 0.035,
+                    length_includes_head=True,
+                    zorder=12
+                )
+
+        except ValueError:
+
+            probe_text.set_text(
+                "FIELD PROBE\n\n"
+                "Undefined at point charge"
+            )
+
+    def create_particle_artists():
+
+        nonlocal particle_marker
+        nonlocal trajectory_line
+
+        trajectory_line, = ax.plot(
+            [],
+            [],
+            color="#a3e635",
+            linewidth=1.5,
+            zorder=8
+        )
+
+        particle_marker, = ax.plot(
+            [],
+            [],
+            "o",
+            color="#a3e635",
+            markersize=7,
+            markeredgecolor="white",
+            zorder=10
+        )
+
+    def update_field():
+
+        nonlocal preview_active
+        nonlocal preview_dirty
+        nonlocal field_dirty
+
+        preview_active = False
+        preview_dirty = False
+        field_dirty = False
+
+        animation.set_artists()
+
+        renderer.render(
+            charges,
+            positions,
+            selected_charge,
+            view_modes[view_index],
+            fast=False
+        )
+
+        draw_probe()
+
+        create_particle_artists()
+
+        animation.set_artists(
+            trajectory_line,
+            particle_marker,
+            particle_text
+        )
+
+        refresh_particle(force=True)
+
+        fig.canvas.draw()
+
+    def begin_preview():
+
+        nonlocal preview_active
+        nonlocal preview_dirty
+        nonlocal field_dirty
+        nonlocal last_preview_update
+
+        animation.set_artists()
+
+        dynamic_renderer.initialize(
+            charges,
+            positions,
+            selected_charge
+        )
+
+        create_particle_artists()
+
+        animation.set_artists(
+            *dynamic_renderer.get_artists(),
+            trajectory_line,
+            particle_marker,
+            particle_text
+        )
+
+        preview_active = True
+        preview_dirty = False
+        field_dirty = False
+
+        if probe_point is not None:
+
+            probe_text.set_text(
+                "FIELD PROBE\n\n"
+                "Updating field..."
+            )
+
+        refresh_particle(force=True)
+
+        last_preview_update = time.perf_counter()
+
+        fig.canvas.draw()
+
+    def update_preview(force=False):
+
+        nonlocal last_preview_update
+        nonlocal preview_dirty
+        nonlocal field_dirty
+
+        if not preview_active:
+
+            begin_preview()
+
+            return
+
+        now = time.perf_counter()
+
+        changed = False
+
+        if preview_dirty or force:
+
+            dynamic_renderer.update_charges(
+                charges,
+                positions,
+                selected_charge
+            )
+
+            preview_dirty = False
+            changed = True
+
+        if field_dirty or force:
+
+            if force or (
+                now - last_preview_update
+                >= preview_interval
+            ):
+
+                dynamic_renderer.update_field(
+                    charges,
+                    positions
+                )
+
+                last_preview_update = now
+
+                field_dirty = False
+                changed = True
+
+        if changed:
+
+            animation.render(
+                update_text=False
+            )
 
     def pause_particle(status="Paused"):
 
         nonlocal particle_status
 
         if particle is not None:
+
             particle.pause()
 
         particle_status = status
 
-        start_button.label.set_text("Start")
+        start_button.label.set_text(
+            "Start"
+        )
+
+    def create_particle(position=None):
+
+        nonlocal particle
+        nonlocal placing_particle
+        nonlocal integration_time
+
+        try:
+
+            initial_position, velocity, q, mass = (
+                read_particle_parameters()
+            )
+
+            if position is not None:
+
+                initial_position = np.asarray(
+                    position,
+                    dtype=float
+                )
+
+            active_positions = positions[
+                charges != 0
+            ]
+
+            distances = np.linalg.norm(
+                active_positions - initial_position,
+                axis=1
+            )
+
+            if np.any(distances < 0.08):
+
+                raise ValueError(
+                    "Position too close to a charge"
+                )
+
+            particle = ParticleSimulator(
+                position=initial_position,
+                velocity=velocity,
+                particle_charge=q,
+                particle_mass=mass,
+                dt=0.001,
+                method=methods[method_index]
+            )
+
+            placing_particle = False
+
+            x_input.set_val(
+                f"{initial_position[0]:.6g}"
+            )
+
+            y_input.set_val(
+                f"{initial_position[1]:.6g}"
+            )
+
+            pause_particle("Ready")
+
+            integration_time = 0.0
+
+            animation.reset_fps()
+
+            domain.expand_if_needed(
+                initial_position
+            )
+
+            update_field()
+
+            return True
+
+        except ValueError as error:
+
+            pause_particle(str(error))
+
+            refresh_particle(force=True)
+
+            fig.canvas.draw_idle()
+
+            return False
+
+    def apply_parameters(event):
+
+        create_particle()
 
     def place_particle(event):
 
         nonlocal placing_particle
 
-        pause_particle("Click the field to place particle")
+        pause_particle(
+            "Click the field to place particle"
+        )
 
         placing_particle = True
 
-        refresh_particle()
+        refresh_particle(force=True)
+
         fig.canvas.draw_idle()
 
     def toggle_particle(event):
@@ -176,9 +622,9 @@ def run_interactive_simulator():
 
         if particle is None:
 
-            place_particle(event)
+            if not create_particle():
 
-            return
+                return
 
         placing_particle = False
 
@@ -192,27 +638,39 @@ def run_interactive_simulator():
 
             particle_status = "Running"
 
-            start_button.label.set_text("Pause")
+            start_button.label.set_text(
+                "Pause"
+            )
 
-        refresh_particle()
+            animation.reset_fps()
+
+        refresh_particle(force=True)
+
         fig.canvas.draw_idle()
 
     def reset_particle(event):
 
         nonlocal placing_particle
+        nonlocal integration_time
 
         placing_particle = False
 
         if particle is not None:
 
             particle.reset()
+
             pause_particle("Ready")
 
         else:
 
-            pause_particle("Place a particle to begin")
+            pause_particle(
+                "Place a particle to begin"
+            )
 
-        refresh_particle()
+        integration_time = 0.0
+
+        refresh_particle(force=True)
+
         fig.canvas.draw_idle()
 
     def change_integrator(event):
@@ -227,7 +685,9 @@ def run_interactive_simulator():
 
         if particle is not None:
 
-            pause_particle("Integrator changed")
+            pause_particle(
+                f"Integrator changed to {method}"
+            )
 
             particle.method = method
 
@@ -235,389 +695,131 @@ def run_interactive_simulator():
             f"Integrator: {method}"
         )
 
-        refresh_particle()
+        refresh_particle(force=True)
+
         fig.canvas.draw_idle()
 
     def animate_particle():
 
-        if particle is None or not particle.running:
+        nonlocal integration_time
+
+        if dragging or slider_changing:
+
+            if preview_dirty or field_dirty:
+
+                update_preview()
+
             return
+
+        if particle is None or not particle.running:
+
+            return
+
+        physics_start = time.perf_counter()
+
+        active_positions = positions[
+            charges != 0
+        ]
 
         for _ in range(10):
 
             position = particle.get_position()
 
-            active_positions = charge_positions[
-                charges != 0
-            ]
+            distances = np.linalg.norm(
+                active_positions - position,
+                axis=1
+            )
 
-            if not np.all(np.isfinite(particle.state)):
+            if np.any(distances < 0.08):
 
-                pause_particle("Invalid numerical state")
-
-                break
-
-            if np.any(np.abs(position) > 5):
-
-                pause_particle("Outside simulation domain")
-
-                break
-
-            if np.any(
-                np.linalg.norm(
-                    active_positions - position,
-                    axis=1
-                ) < 0.08
-            ):
-
-                pause_particle("Near point charge: stopped")
+                pause_particle(
+                    "Near point charge: stopped"
+                )
 
                 break
 
             previous_state = particle.state.copy()
+
             previous_time = particle.time
-            previous_length = len(particle.trajectory)
+
+            previous_length = len(
+                particle.trajectory
+            )
 
             try:
 
                 particle.step(
                     charges,
-                    charge_positions
+                    positions
                 )
 
-                if not np.all(np.isfinite(particle.state)):
+                if not np.all(
+                    np.isfinite(particle.state)
+                ):
 
-                    raise FloatingPointError(
-                        "Non-finite particle state"
-                    )
+                    raise FloatingPointError()
 
-            except (ValueError, FloatingPointError):
+            except (
+                ValueError,
+                FloatingPointError
+            ):
 
                 particle.state = previous_state
+
                 particle.time = previous_time
 
-                del particle.trajectory[previous_length:]
+                del particle.trajectory[
+                    previous_length:
+                ]
 
-                pause_particle("Numerical singularity: stopped")
+                pause_particle(
+                    "Numerical singularity: stopped"
+                )
 
                 break
 
-        refresh_particle()
-        fig.canvas.draw_idle()
+        elapsed = (
+            time.perf_counter() - physics_start
+        ) * 1000
 
-    def draw_probe():
+        if integration_time == 0:
 
-        if probe_point is None:
-
-            probe_text.set_text(
-                "Right-click to place probe"
-            )
-
-            return
-
-        x, y = probe_point
-
-        ax.scatter(
-            x,
-            y,
-            marker="x",
-            color="yellow",
-            s=70,
-            zorder=8
-        )
-
-        try:
-
-            field, magnitude, potential = calculate_probe_values(
-                charges,
-                charge_positions,
-                probe_point
-            )
-
-        except ValueError:
-
-            probe_text.set_text(
-                "FIELD PROBE\n\n"
-                "Undefined at point charge"
-            )
-
-            return
-
-        probe_text.set_text(
-            f"FIELD PROBE\n\n"
-            f"x = {x:.3f} m\n"
-            f"y = {y:.3f} m\n\n"
-            f"Ex = {field[0]:.4g} N/C\n"
-            f"Ey = {field[1]:.4g} N/C\n"
-            f"|E| = {magnitude:.4g} N/C\n"
-            f"V = {potential:.4g} V"
-        )
-
-        if np.isfinite(magnitude) and magnitude > 0:
-
-            direction = 0.65 * field / magnitude
-
-            ax.annotate(
-                "",
-                xy=probe_point + direction,
-                xytext=probe_point,
-                arrowprops=dict(
-                    arrowstyle="->",
-                    color="yellow",
-                    lw=2
-                ),
-                zorder=9
-            )
-
-    def clear_probe(event):
-
-        nonlocal probe_point
-
-        probe_point = None
-
-        update_field()
-
-    def update_field(fast=False):
-
-        nonlocal last_update
-        nonlocal particle_marker
-        nonlocal trajectory_line
-
-        current_time = time.perf_counter()
-
-        if fast and current_time - last_update < update_interval:
-            return
-
-        last_update = current_time
-
-        if fast:
-
-            X, Y = X_fast, Y_fast
-            density = 0.8
-            linewidth = 0.8
-            number_of_levels = 7
+            integration_time = elapsed
 
         else:
 
-            X, Y = X_full, Y_full
-            density = 1.5
-            linewidth = 1.0
-            number_of_levels = 13
+            integration_time = (
+                0.9 * integration_time
+                + 0.1 * elapsed
+            )
 
-        ax.clear()
-
-        ax.set_facecolor("#0d1117")
-
-        current_view = view_modes[view_index]
-
-        active = charges != 0
-
-        active_charges = charges[active]
-        active_positions = charge_positions[active]
-
-        if current_view in ["Electric Field", "Combined"]:
-
-            if len(active_charges) > 0:
-
-                Ex, Ey = calculate_field_grid_vectorized(
-                    active_charges,
-                    active_positions,
-                    X,
-                    Y
-                )
-
-                magnitude = np.hypot(Ex, Ey)
-
-                log_magnitude = np.log1p(magnitude)
-
-                finite_values = log_magnitude[
-                    np.isfinite(log_magnitude)
-                ]
-
-                if finite_values.size and np.max(finite_values) > 0:
-
-                    upper_limit = np.percentile(
-                        finite_values,
-                        95
-                    )
-
-                    norm = Normalize(
-                        vmin=0,
-                        vmax=max(upper_limit, 1e-12),
-                        clip=True
-                    )
-
-                    ax.streamplot(
-                        X,
-                        Y,
-                        Ex,
-                        Ey,
-                        color=log_magnitude,
-                        cmap="turbo",
-                        norm=norm,
-                        density=density,
-                        linewidth=linewidth
-                    )
-
-        if current_view in ["Equipotential", "Combined"]:
-
-            if len(active_charges) > 0:
-
-                V = calculate_potential_grid(
-                    active_charges,
-                    active_positions,
-                    X,
-                    Y
-                )
-
-                finite_values = V[np.isfinite(V)]
-
-                if finite_values.size:
-
-                    limit = np.percentile(
-                        np.abs(finite_values),
-                        95
-                    )
-
-                    if limit > 0:
-
-                        levels = np.linspace(
-                            -limit,
-                            limit,
-                            number_of_levels
-                        )
-
-                        levels = levels[
-                            (levels > np.min(finite_values)) &
-                            (levels < np.max(finite_values))
-                        ]
-
-                        if levels.size:
-
-                            contours = ax.contour(
-                                X,
-                                Y,
-                                V,
-                                levels=levels,
-                                colors="white",
-                                linewidths=0.8,
-                                linestyles="dashed",
-                                alpha=0.6
-                            )
-
-                            if not fast:
-
-                                ax.clabel(
-                                    contours,
-                                    inline=True,
-                                    fontsize=8,
-                                    fmt="%.1f V"
-                                )
-
-        for i, (q, position) in enumerate(
-            zip(charges, charge_positions)
+        if domain.expand_if_needed(
+            particle.get_position()
         ):
 
-            color = (
-                "#ff4757" if q > 0
-                else "#38bdf8" if q < 0
-                else "gray"
-            )
+            update_field()
 
-            ax.scatter(
-                position[0],
-                position[1],
-                color=color,
-                s=100,
-                edgecolors="white",
-                zorder=5
-            )
+            return
 
-            if i == selected_charge:
-
-                ax.scatter(
-                    position[0],
-                    position[1],
-                    s=250,
-                    facecolors="none",
-                    edgecolors="yellow",
-                    linewidths=1.5,
-                    zorder=6
-                )
-
-            ax.annotate(
-                f"{q * 1e9:+.2f} nC",
-                position,
-                xytext=(0, 15),
-                textcoords="offset points",
-                ha="center",
-                color=color,
-                fontweight="bold"
-            )
-
-        ax.set_xlim(-5, 5)
-        ax.set_ylim(-5, 5)
-
-        ax.set_aspect("equal")
-
-        ax.set_xlabel("x (m)")
-        ax.set_ylabel("y (m)")
-
-        ax.set_title(
-            f"{current_view} | {len(charges)} charges",
-            fontsize=14,
-            fontweight="bold"
+        text_updated = refresh_particle(
+            force=not particle.running
         )
 
-        ax.grid(alpha=0.08)
-
-        draw_probe()
-
-        trajectory_line, = ax.plot(
-            [],
-            [],
-            color="#a3e635",
-            lw=1.5,
-            zorder=7
+        animation.render(
+            update_text=text_updated
         )
 
-        particle_marker, = ax.plot(
-            [],
-            [],
-            "o",
-            color="#a3e635",
-            markersize=7,
-            markeredgecolor="white",
-            zorder=10
-        )
+        if not particle.running:
 
-        refresh_particle()
-
-        fig.canvas.draw_idle()
-
-    slider_ax = fig.add_axes(
-        [0.25, 0.26, 0.55, 0.03]
-    )
-
-    charge_slider = Slider(
-        slider_ax,
-        "Selected charge (nC)",
-        -10,
-        10,
-        valinit=5,
-        valstep=0.1
-    )
+            fig.canvas.draw_idle()
 
     def sync_slider():
 
-        charge_slider.eventson = False
+        nonlocal syncing_slider
 
-        if selected_charge is None:
+        syncing_slider = True
 
-            charge_slider.set_val(0)
-            charge_slider.set_active(False)
-
-        else:
+        if selected_charge is not None:
 
             charge_slider.set_active(True)
 
@@ -625,36 +827,51 @@ def run_interactive_simulator():
                 charges[selected_charge] * 1e9
             )
 
-        charge_slider.eventson = True
+        else:
+
+            charge_slider.set_active(False)
+
+        syncing_slider = False
 
     def update_charge(value):
 
         nonlocal slider_changing
+        nonlocal preview_dirty
+        nonlocal field_dirty
 
-        if selected_charge is None:
+        if syncing_slider:
+
             return
 
-        pause_particle("Source charge changed")
+        if selected_charge is None:
+
+            return
+
+        if not slider_changing:
+
+            pause_particle(
+                "Source charge modified"
+            )
 
         charges[selected_charge] = value * 1e-9
 
         slider_changing = True
 
-        update_field(fast=True)
+        preview_dirty = True
+        field_dirty = True
 
     def on_press(event):
 
         nonlocal selected_charge
         nonlocal dragging
         nonlocal probe_point
-        nonlocal particle
-        nonlocal placing_particle
-        nonlocal particle_status
 
-        if event.inaxes != ax:
+        if event.inaxes is not ax:
+
             return
 
         if event.xdata is None or event.ydata is None:
+
             return
 
         position = np.array([
@@ -671,181 +888,179 @@ def run_interactive_simulator():
             return
 
         if event.button != 1:
+
             return
 
         if placing_particle:
 
-            active_positions = charge_positions[
-                charges != 0
-            ]
-
-            if np.any(
-                np.linalg.norm(
-                    active_positions - position,
-                    axis=1
-                ) < 0.08
-            ):
-
-                particle_status = "Choose a point away from charges"
-
-                refresh_particle()
-                fig.canvas.draw_idle()
-
-                return
-
-            particle = ParticleSimulator(
-                position=position,
-                velocity=[0.0, 1.0],
-                particle_charge=1e-9,
-                particle_mass=1e-9,
-                dt=0.001,
-                method=methods[method_index]
-            )
-
-            placing_particle = False
-
-            pause_particle("Ready")
-
-            refresh_particle()
-
-            fig.canvas.draw_idle()
+            create_particle(position)
 
             return
 
-        if len(charges) == 0:
+        if len(positions) == 0:
+
             return
 
         distances = np.linalg.norm(
-            charge_positions - position,
+            positions - position,
             axis=1
         )
 
-        nearest_charge = np.argmin(distances)
+        nearest = np.argmin(distances)
 
-        if distances[nearest_charge] < 0.3:
+        if distances[nearest] < domain.limit * 0.06:
 
-            pause_particle("Source charge selected")
+            selected_charge = nearest
 
-            selected_charge = nearest_charge
+            pause_particle(
+                "Moving source charge"
+            )
 
             dragging = True
 
             sync_slider()
 
-            update_field(fast=True)
+            begin_preview()
 
     def on_motion(event):
 
-        if not dragging or selected_charge is None:
+        nonlocal preview_dirty
+        nonlocal field_dirty
+
+        if not dragging:
+
             return
 
-        if event.inaxes != ax:
+        if event.inaxes is not ax:
+
             return
 
         if event.xdata is None or event.ydata is None:
+
             return
 
-        charge_positions[selected_charge] = [
+        positions[selected_charge] = [
             event.xdata,
             event.ydata
         ]
 
-        update_field(fast=True)
+        preview_dirty = True
+        field_dirty = True
 
     def on_release(event):
 
         nonlocal dragging
         nonlocal slider_changing
+        nonlocal preview_dirty
+        nonlocal field_dirty
 
         if dragging or slider_changing:
 
+            if dragging and event.inaxes is ax:
+
+                if (
+                    event.xdata is not None
+                    and event.ydata is not None
+                ):
+
+                    positions[selected_charge] = [
+                        event.xdata,
+                        event.ydata
+                    ]
+
             dragging = False
             slider_changing = False
+
+            preview_dirty = False
+            field_dirty = False
 
             update_field()
 
     def add_charge(value):
 
         nonlocal charges
-        nonlocal charge_positions
+        nonlocal positions
         nonlocal selected_charge
-        nonlocal dragging
 
-        position = np.array([0.0, 0.0])
+        pause_particle(
+            "Source charge added"
+        )
 
-        for _ in range(100):
+        position = np.array([
+            0.0,
+            0.0
+        ])
 
-            if not len(charges):
-                break
+        if len(positions):
 
-            distances = np.linalg.norm(
-                charge_positions - position,
-                axis=1
-            )
+            for _ in range(100):
 
-            if np.all(distances > 0.4):
-                break
+                distances = np.linalg.norm(
+                    positions - position,
+                    axis=1
+                )
 
-            position = np.random.uniform(
-                -3,
-                3,
-                size=2
-            )
+                if np.all(distances > 0.5):
 
-        pause_particle("Source charge added")
+                    break
+
+                position = np.random.uniform(
+                    -domain.limit * 0.6,
+                    domain.limit * 0.6,
+                    size=2
+                )
 
         charges = np.append(
             charges,
             value
         )
 
-        charge_positions = np.vstack([
-            charge_positions,
+        positions = np.vstack([
+            positions,
             position
         ])
 
         selected_charge = len(charges) - 1
 
-        dragging = False
-
         sync_slider()
 
         update_field()
 
-    def add_positive(event):
-
-        add_charge(5e-9)
-
-    def add_negative(event):
-
-        add_charge(-5e-9)
-
     def remove_charge(event):
 
         nonlocal charges
-        nonlocal charge_positions
+        nonlocal positions
         nonlocal selected_charge
-        nonlocal dragging
 
         if selected_charge is None:
+
             return
 
-        pause_particle("Source charge removed")
+        pause_particle(
+            "Source charge removed"
+        )
 
         charges = np.delete(
             charges,
             selected_charge
         )
 
-        charge_positions = np.delete(
-            charge_positions,
+        positions = np.delete(
+            positions,
             selected_charge,
             axis=0
         )
 
-        selected_charge = 0 if len(charges) else None
+        if len(charges):
 
-        dragging = False
+            selected_charge = min(
+                selected_charge,
+                len(charges) - 1
+            )
+
+        else:
+
+            selected_charge = None
 
         sync_slider()
 
@@ -865,33 +1080,62 @@ def run_interactive_simulator():
 
         update_field()
 
+    def clear_probe(event):
+
+        nonlocal probe_point
+
+        probe_point = None
+
+        update_field()
+
     def reset(event):
 
         nonlocal charges
-        nonlocal charge_positions
+        nonlocal positions
         nonlocal selected_charge
+        nonlocal particle
+        nonlocal probe_point
+        nonlocal placing_particle
         nonlocal dragging
         nonlocal slider_changing
-        nonlocal probe_point
-        nonlocal particle
-        nonlocal placing_particle
+        nonlocal preview_dirty
+        nonlocal field_dirty
+        nonlocal integration_time
 
-        pause_particle("Place a particle to begin")
+        pause_particle()
 
-        probe_point = None
-        particle = None
-        placing_particle = False
+        charges = np.array([
+            5e-9,
+            -5e-9
+        ])
 
-        charges = initial_charges.copy()
-
-        charge_positions = initial_positions.copy()
+        positions = np.array([
+            [-2.0, 0.0],
+            [2.0, 0.0]
+        ])
 
         selected_charge = 0
 
+        particle = None
+        probe_point = None
+
+        placing_particle = False
         dragging = False
         slider_changing = False
+        preview_dirty = False
+        field_dirty = False
+
+        integration_time = 0.0
+
+        domain.reset()
+
+        pause_particle(
+            "Place a particle to begin"
+        )
 
         sync_slider()
+
+        animation.reset_fps()
 
         update_field()
 
@@ -899,94 +1143,117 @@ def run_interactive_simulator():
         bounds,
         label,
         callback,
-        color="#30363d",
-        hovercolor="#555555"
+        color="#30363d"
     ):
 
-        button_ax = fig.add_axes(bounds)
+        button_ax = fig.add_axes(
+            bounds
+        )
 
         button = Button(
             button_ax,
             label,
             color=color,
-            hovercolor=hovercolor
+            hovercolor="#555555"
         )
+
+        button.label.set_color("white")
 
         button.on_clicked(callback)
 
         return button
 
+    slider_ax = fig.add_axes([
+        0.22,
+        0.30,
+        0.41,
+        0.025
+    ])
+
+    charge_slider = Slider(
+        slider_ax,
+        "Selected charge (nC)",
+        -10,
+        10,
+        valinit=5,
+        valstep=0.1
+    )
+
     positive_button = create_button(
-        [0.10, 0.18, 0.19, 0.045],
+        [0.07, 0.23, 0.135, 0.04],
         "+ Positive",
-        add_positive,
-        "#54242b",
-        "#a83242"
+        lambda event: add_charge(5e-9),
+        "#54252b"
     )
 
     negative_button = create_button(
-        [0.30, 0.18, 0.19, 0.045],
+        [0.215, 0.23, 0.135, 0.04],
         "+ Negative",
-        add_negative,
-        "#163d55",
-        "#2563a0"
+        lambda event: add_charge(-5e-9),
+        "#163d52"
     )
 
     remove_button = create_button(
-        [0.50, 0.18, 0.19, 0.045],
+        [0.36, 0.23, 0.135, 0.04],
         "Remove",
         remove_charge
     )
 
     reset_button = create_button(
-        [0.70, 0.18, 0.19, 0.045],
+        [0.505, 0.23, 0.135, 0.04],
         "Reset",
         reset
     )
 
     view_button = create_button(
-        [0.20, 0.115, 0.39, 0.045],
+        [0.07, 0.16, 0.35, 0.04],
         "View: Electric Field",
         change_view,
-        "#34305c",
-        "#51498a"
+        "#35305c"
     )
 
-    clear_probe_button = create_button(
-        [0.62, 0.115, 0.19, 0.045],
+    probe_button = create_button(
+        [0.43, 0.16, 0.21, 0.04],
         "Clear Probe",
         clear_probe
     )
 
     place_button = create_button(
-        [0.10, 0.04, 0.19, 0.045],
+        [0.07, 0.09, 0.135, 0.04],
         "Place Particle",
         place_particle
     )
 
     start_button = create_button(
-        [0.30, 0.04, 0.19, 0.045],
+        [0.215, 0.09, 0.135, 0.04],
         "Start",
         toggle_particle,
-        "#24543a",
-        "#387c55"
+        "#24543b"
     )
 
-    particle_reset_button = create_button(
-        [0.50, 0.04, 0.19, 0.045],
+    reset_particle_button = create_button(
+        [0.36, 0.09, 0.135, 0.04],
         "Reset Particle",
         reset_particle
     )
 
     integrator_button = create_button(
-        [0.70, 0.04, 0.19, 0.045],
+        [0.505, 0.09, 0.135, 0.04],
         "Integrator: RK4",
         change_integrator,
-        "#34305c",
-        "#51498a"
+        "#35305c"
     )
 
-    charge_slider.on_changed(update_charge)
+    apply_button = create_button(
+        [0.73, 0.09, 0.24, 0.04],
+        "Apply Initial Conditions",
+        apply_parameters,
+        "#24543b"
+    )
+
+    charge_slider.on_changed(
+        update_charge
+    )
 
     fig.canvas.mpl_connect(
         "button_press_event",
@@ -1004,10 +1271,12 @@ def run_interactive_simulator():
     )
 
     timer = fig.canvas.new_timer(
-        interval=30
+        interval=animation.get_timer_interval()
     )
 
-    timer.add_callback(animate_particle)
+    timer.add_callback(
+        animate_particle
+    )
 
     fig.canvas.mpl_connect(
         "close_event",
@@ -1022,4 +1291,5 @@ def run_interactive_simulator():
 
 
 if __name__ == "__main__":
+
     run_interactive_simulator()
